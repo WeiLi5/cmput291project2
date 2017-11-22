@@ -1,0 +1,12 @@
+alphanumeric    ::= [0-9a-zA-Z_]
+numeric		::= [0-9]
+year            ::= numeric
+yearPrefix      ::= 'year' ':'
+yearQuery       ::= yearPrefix year
+termPrefix      ::= ('title' | 'author' | 'other') ':'
+term            ::= alphanumeric
+termQuery       ::= termPrefix? term 
+phrase		::= term (whitespace term)*
+phraseQuery	::= termPrefix? '"' phrase '"'
+expression      ::= yearQuery | termQuery | phraseQuery
+query           ::= expression (whitespace expression)*
