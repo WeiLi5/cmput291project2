@@ -34,7 +34,7 @@ class Search:
         key_set = None
 
         curs = teidx.cursor()
-        # for terms, look up key in te.idx
+        # for terms, look up key in teidx
         for term in self.constrain['terms']:
             result = curs.set(term.encode("utf-8"))
             result_set = set()
