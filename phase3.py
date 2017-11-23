@@ -34,7 +34,7 @@ class Search:
         key_set = None
 
         curs = teidx.cursor()
-        # for terms, look up key in teidx
+        # for terms, look up key in te.idx
         for term in self.constrain['terms']:
             result = curs.set(term.encode("utf-8"))
             result_set = set()
@@ -47,6 +47,16 @@ class Search:
                 key_set = key_set & result_set
                 
         # for years, look up key in yeidx
+        for year in self.constrain['years']:
+            result = curs.set(year.encode("utf-8"))
+            result_set = set()
+            while result != None:
+                result_set.add(result[1])
+                result = curs.next_dup()
+            if key_set == None:
+                key_set = result_set
+            else:
+                key_set = key_set & result_set
         
         
         # for substring, look up key in teidx for terms
