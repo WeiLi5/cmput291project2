@@ -36,7 +36,7 @@ class Search:
         curs = teidx.cursor()
         # for terms, look up key in teidx
         for term in self.constrain['terms']:
-            result = curs.set(term)
+            result = curs.set(term.encode("utf-8"))
             result_set = set()
             while result != None:
                 result_set.add(result[1])
