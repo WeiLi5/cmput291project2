@@ -1,203 +1,239 @@
-import fileinput
+import re
 from bsddb3 import db
-yeidx = db.DB()
-reidx = db.DB()
-teidx = db.DB()
-yeidx.open('ye.idx')
-reidx.open('re.idx')
-teidx.open('te.idx')
 
-def checkNumeric(string):
-    for c in string:
-        if not c.isdigit():
-            return False
-    return True
+TE = 'te.idx'
+YE = 'ye.idx'
+RE = 're.idx'
 
-def checkAlphaNumeric(string):
-    for c in string:
-        if not (c.isdigit() or c.isalpha() or c == '_'):
-            return False
-    return True
+teDB = db.DB()
+yeDB = db.DB()
+reDB = db.DB()
+teDB.open(TE, None, db.DB_BTREE, db.DB_DIRTY_READ)
+yeDB.open(YE, None, db.DB_BTREE, db.DB_DIRTY_READ)
+reDB.open(RE, None, db.DB_HASH, db.DB_DIRTY_READ)
+teCurs = teDB.cursor()
+yeCurs = yeDB.cursor()
+reCurs = reDB.cursor()
 
-class Search:
-    def __init__(self):
-        self.constrain = {
-            'terms':[], # store terms like a-xxx,o-xxx,t-xxx
-            'year':[],  # store years xxxx, or >xxxx <xxxx
-            'substring':[], # store tuples like (filed,substring)
-            'all' : False
-        }
+mode = 1  # 1:full mode 2: key mode
+
+outputKey = True
+
+def grammar():
+    global mode
+
+    tids = []
+    queries = input('Enter a query: ').lower()
 
 
+    specialQuery = queries.split(' ')
 
-    def search(self,onlyKey):
-        key_set = None
+    #check some special query.
+    for s in specialQuery:
+        # CASE -1 : [Quit]
+        if 'stop' in s:
+            quit()
+        # CASE 0 : [mode change]
+        if 'output=full' in s:
+            mode = 1
+            print("Switch to full record")
+        elif 'output=key' in s:
+            mode = 2
+            print("Switch to key record")
 
-        curs = teidx.cursor()
-        # for terms, look up key in te.idx
-        for term in self.constrain['terms']:
-            result = curs.set(term.encode("utf-8"))
-            result_set = set()
-            while result != None:
-                result_set.add(result[1])
-                result = curs.next_dup()
-            if key_set == None:
-                key_set = result_set
-            else:
-                key_set = key_set & result_set
-                
-        # for years, look up key in yeidx
-        for year in self.constrain['years']:
-            result = curs.set(year.encode("utf-8"))
-            result_set = set()
-            while result != None:
-                result_set.add(result[1])
-                result = curs.next_dup()
-            if key_set == None:
-                key_set = result_set
-            else:
-                key_set = key_set & result_set
-        
-        
-        # for substring, look up key in teidx for terms
-        # and get the whole record from reidx
-        # then check if substring is a substring of certain field
-        # of the record
-        
-        
-        return key_set
-    
-    def addSubstrConstrain(self,field,term):
-        words = term.split(" ")
-        for word in words:
-            if not checkAlphaNumeric(word):
-                return False
-        self.constrain['substring'].append((field,term))
-        return True
-    def addConstrain(self,exp):
-        # case 1: field:term
-        if ":" in exp:
-            pair = exp.split(':')
-            if len(pair) != 2:
-                return False
-            field,term = pair
-            
-            # check for grammer for certain field
-            if field == 'title' or field == 'author' or field == 'other':
-                if not checkAlphaNumeric(term):
-                    if term[0] == term[-1] == '"':
-                        return self.addSubstrConstrain(field,term[1:-1])
-                    return False
-                self.constrain['terms'].append(field[0]+'-'+term)
-            elif field == 'year':
-                if not checkNumeric(term):
-                    return False
-                self.constrain[field].append(term)
-            else:
-                return False
-        # case 2: year>xxxx or year<xxxx, range constrain
-        elif '<' in exp or '>' in exp:
-            if '<' in exp:
-                sign = '<'
-            else:
-                sign = '>'
-            pair = exp.split(sign)
-            if len(pair) != 2:
-                return False
-            prefix,year = pair
-            if prefix != 'year':
-                return False
-            if not checkNumeric(year):
-                return False
-            self.constrain['year'].append(sign+year)
-        # case 3: all records
-        elif exp == 'database':
-            self.constrain['all'] = True
-            
-        # case 4: error
+    #check if there are substrings 
+    if checkQuotation(queries):
+        queryNum = 0
+        queries = queries.split(':')
+        if queries[0] == 'title':
+            termPrefix = 't-'
         else:
-            return False
-        return True
-            
-            
-        
+            raise RuntimeError('Invalid input')
 
-def parseQuery(query):
-    inSubString = False
-    exps = []
-    exp = ""
-    for c in query:
-        # encounter space not in a substring
-        if c == ' ' and not inSubString:
-            if exp != "":
-                # end a expression
-                exps.append(exp)
-                exp = ""
-        # encounter a ", start or end a sbustring
-        elif c == '"':
-            inSubString = not inSubString
-        # add char to expression
-        if inSubString or c != ' ':
-            exp += c
-    # if still in substring after parsing (no end ")
-    # error
-    if inSubString:
-        return
-    # close last expression in case query not end with space
-    elif exp != '':
-        exps.append(exp)
-    return exps
+        text = queries[1]
+        substringT = text[1:-1]
+        substring = substringT.split(" ")
+        #print(substring) 
+        for tTerm in substring:
+            newTids = search(termPrefix, tTerm)
+
+            if queryNum == 0:
+                tids = newTids
+            else:
+                tids = list(set(tids).intersection(newTids))
+
+            queryNum += 1
+
+        return tids
+
+    else:
 
 
+
+        queries = queries.split(' ')
+        queryNum = 0
+
+        for query in queries:
+
+            #CASE 1 : [prefix:term]
+            if ':' in query:
+                query = query.split(':')
+                if query[0] == 'title':
+                    termPrefix = 't-'
+                elif query[0] == 'author':
+                    termPrefix = 'a-'
+                elif query[0] == 'other':
+                    termPrefix = 'o-'
+                ####    
+                elif query[0] == 'year':
+                    termPrefix = ''
+              
+                else:
+                    raise RuntimeError('Invalid Query') 
+
+                newTids = search(termPrefix, query[1])
+
+
+            #CASE 2: Year   
+            elif '>' in query:
+                query = query.split('>')
+                if query[0] != 'year':
+                    raise RuntimeError('Invalid query')
+
+                else:
+                    newTids = afterDate(query[1])
+
+            elif '<' in query:
+                query = query.split('<')
+                if query[0] != 'year':
+                    raise RuntimeError('Invalid query')
+                else:
+                    newTids = beforeDate(query[1])  
+
+            # elif checkQuotation(query):
+            #     query = query.split(':')
+            #     text = query[1]
+            #     substringT = text[1:-1]
+            #     substring = substringT.split(" ")
+            #     print(substring) 
+
+
+
+            else:
+
+                titleTids = search('t-', query)
+                authorTids = search('a-', query)
+                otherTids = search('o-', query)
+                newTids = list(set(titleTids).union(set(authorTids).union(otherTids)))  
+
+            if queryNum == 0:
+                tids = newTids
+            else:
+                tids = list(set(tids).intersection(newTids))
+
+            queryNum += 1
+
+        return tids
+
+def checkQuotation(string):
+    for c in string:
+        if c == '"':
+            return True
+    return False
+
+
+
+def search(termPrefix, term):
+    if termPrefix == '':
+        curs = yeCurs
+    else:
+        curs = teCurs
+
+    key = termPrefix + term
+    key = key.encode()
+    results = []
+
+    result = curs.get(key, db.DB_SET)
+    while result != None: # curs.get(key, db.DB_NEXT_DUP) will return None if it reaches end
+        # print(result)
+        results.append(result[1])
+        result = curs.get(key, db.DB_NEXT_DUP)
+
+    return results
+
+def afterDate(year):
+    year = year.encode()
+    results = []
+
+    result = yeCurs.get(year, db.DB_SET_RANGE)
+    while result != None: # when the date goes through to the end, it will return None
+        if result[0] != year: # we just want to include result after the given date
+            # print(result)
+            results.append(result[1])
+        result = yeCurs.get(year, db.DB_NEXT)
+
+    return results
+
+def beforeDate(year):
+    year = year.encode()
+    results = []
+
+    result = yeCurs.get(year, db.DB_SET_RANGE)
+    result = yeCurs.get(year, db.DB_PREV) # move the cursor to previous one
+    while result != None: # when the date goes through to the end, it will return None
+        # print(result)
+        results.append(result[1])
+        result = yeCurs.get(year, db.DB_PREV) # since it goes through the databse reversely, the result will be from latest date to earliest date
+
+    return results
+
+def searchTweets(tids):
+    for tid in tids:
+        result = reCurs.get(tid, db.DB_SET)
+        output(result[1])
+
+
+def output(line):
+    global mode 
+
+    line = line.decode()
+    # print('debug: ' + line)
+    # mode 2 only key is printed
+    tkey = re.findall(r'<article key="(.+?)">', line)
+    # mode 1 full record is printed
+    if mode == 1:
+        title = re.findall(r'<title>(.+?)</title>', line)
+        tauthor = re.findall(r'<author>(.+?)</author>', line)
+        tpages = re.findall(r'<pages>(.+?)</pages>', line)
+        tyear = re.findall(r'<year>(.+?)</year>', line)
+        journal = re.findall(r'<journal>(.+?)</journal>', line)
+        print("key: %s \ntitle: %s \nauthor: %s \npages: %s \nyear: %s \njournal: %s \n" % (''.join(tkey),''.join(title), ''.join(tauthor), ''.join(tpages), ''.join(tyear),''.join(journal)))
+    else:
+        print("key: %s \n" % (''.join(tkey)))
+
+    print('\n')
 
 def main():
-    onlyKey = False
-    errorMessage = "Wrong query format"
-    
-    # take query from std input
-    for query in fileinput.input():
-        # convert query to expressions
-        query = query.strip().lower()
-        exps = parseQuery(query) 
-        
-        # if error in parsing query
-        if exps == None:
-            print(errorMessage)
-            continue
-            
-        # if empty query
-        if not len(exps):
-            continue
-            
-        # create new Search object for every query
-        search = Search()
-        noError = True
-        
-        # loop through expressions
-        for exp in exps:
-            
-            # check if the expression is change output setting
-            if exp == 'output=key':
-                onlyKey = True
-            elif exp == 'output=full':
-                onlyKey = False
-                
-            # add constrain to search
-            else:
-                noError = noError and search.addConstrain(exp)
-                if not noError:
-                    break
-                    
-        # if error in checking constrain
-        if not noError:
-            print(errorMessage)
-            continue
-        
-        # search for result
-        print(search.search(onlyKey))
-        
-        # close dbs
-        reidx.close()
-        yeidx.close()
-        teidx.close()
+    while True:
+
+        invalidInput = True
+        while invalidInput:
+            try:
+                tids = grammar()
+                invalidInput = False
+            except RuntimeError:
+                print('invalid query')
+
+        if tids == []:
+            print('')
+        else:
+            searchTweets(tids)
+
 main()
+
+teDB.close()
+yeDB.close()
+reDB.close()
+teCurs.close()
+yeCurs.close()
+reCurs.close()
